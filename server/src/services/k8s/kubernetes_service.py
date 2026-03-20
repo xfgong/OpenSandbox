@@ -19,6 +19,7 @@ This module provides a Kubernetes implementation of the sandbox service interfac
 using Kubernetes resources for sandbox lifecycle management.
 """
 
+import asyncio
 import logging
 import time
 from datetime import datetime, timezone
@@ -138,7 +139,7 @@ class KubernetesSandboxService(SandboxService):
             self.execd_image,
         )
     
-    def _wait_for_sandbox_ready(
+    async def _wait_for_sandbox_ready(
         self,
         sandbox_id: str,
         timeout_seconds: int = 60,
@@ -205,7 +206,7 @@ class KubernetesSandboxService(SandboxService):
                 )
             
             # Wait before next poll
-            time.sleep(poll_interval_seconds)
+            await asyncio.sleep(poll_interval_seconds)
         
         # Timeout
         elapsed = time.time() - start_time
@@ -250,7 +251,7 @@ class KubernetesSandboxService(SandboxService):
             },
         )
 
-    def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
+    async def create_sandbox(self, request: CreateSandboxRequest) -> CreateSandboxResponse:
         """
         Create a new sandbox using Kubernetes Pod.
         
@@ -349,7 +350,7 @@ class KubernetesSandboxService(SandboxService):
             
             # Wait for Pod to be Running with IP
             try:
-                workload = self._wait_for_sandbox_ready(
+                workload = await self._wait_for_sandbox_ready(
                     sandbox_id=sandbox_id,
                     timeout_seconds=self.app_config.kubernetes.sandbox_create_timeout_seconds,
                     poll_interval_seconds=self.app_config.kubernetes.sandbox_create_poll_interval_seconds,
