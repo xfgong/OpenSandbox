@@ -142,7 +142,8 @@ class PoolReconcilerStateTest {
         }
 
         assertEquals(1, state.failureCount)
-        assertEquals(listOf("id-1", "id-2"), orphaned)
+        assertEquals(2, orphaned.size)
+        assertEquals(setOf("id-1", "id-2"), orphaned.toSet())
     }
 
     @Test
