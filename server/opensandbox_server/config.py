@@ -462,6 +462,13 @@ class StorageConfig(BaseModel):
             "Each entry must be an absolute path (e.g., '/data/opensandbox')."
         ),
     )
+    volume_default_size: str = Field(
+        default="1Gi",
+        description=(
+            "Default storage size for auto-created PVCs when the caller does "
+            "not specify a size in the PVC provisioning hints."
+        ),
+    )
     ossfs_mount_root: str = Field(
         default="/mnt/ossfs",
         description=(
