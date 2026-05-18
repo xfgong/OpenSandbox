@@ -37,7 +37,9 @@ from opensandbox_server.config import (
     RuntimeConfig,
     ServerConfig,
     StorageConfig,
+    load_config,
 )
+from opensandbox_server.logging_config import configure_logging
 
 
 def _strip_optional(annotation: Any) -> Any:
@@ -284,9 +286,14 @@ def main() -> None:
     if args.config:
         os.environ[CONFIG_ENV_VAR] = args.config
 
-    from opensandbox_server import main as server_main  # local import after env is set
+    # Load config + logging without importing opensandbox_server.main: importing
+    # main eagerly constructs sandbox_service (restoring containers and starting
+    # expiration timers) in this process. With workers > 1 that leaks timers to
+    # the uvicorn supervisor and (on spawn) duplicates them across workers.
+    app_config = load_config()
+    log_config = configure_logging(app_config.log)
+    server_cfg = app_config.server
 
-    server_cfg = server_main.app_config.server
     workers = 1 if args.reload else server_cfg.workers
     if args.reload and server_cfg.workers > 1:
         print(
@@ -298,7 +305,7 @@ def main() -> None:
         host=server_cfg.host,
         port=server_cfg.port,
         reload=args.reload,
-        log_config=server_main._log_config,
+        log_config=log_config,
         timeout_keep_alive=server_cfg.timeout_keep_alive,
         workers=workers,
         limit_concurrency=server_cfg.limit_concurrency,
