@@ -88,6 +88,16 @@ class K8sClient:
         return self._node_v1_api
 
 
+    def _lookup_informer(self, group: str, version: str, plural: str, namespace: str) -> Optional[WorkloadInformer]:
+        """Return an existing informer without starting one. Used by write paths
+        to invalidate cache entries; never auto-create on writes since list paths
+        own the lazy-start contract."""
+        if not self.config.informer_enabled:
+            return None
+        key: _InformerKey = (group, version, plural, namespace)
+        with self._informers_lock:
+            return self._informers.get(key)
+
     def _get_informer(self, group: str, version: str, plural: str, namespace: str) -> Optional[WorkloadInformer]:
         """Return the informer for this resource+namespace, starting it lazily."""
         if not self.config.informer_enabled:
@@ -131,13 +141,17 @@ class K8sClient:
         """Create a namespaced custom resource."""
         if self._write_limiter:
             self._write_limiter.acquire()
-        return self.get_custom_objects_api().create_namespaced_custom_object(
+        obj = self.get_custom_objects_api().create_namespaced_custom_object(
             group=group,
             version=version,
             namespace=namespace,
             plural=plural,
             body=body,
         )
+        informer = self._lookup_informer(group, version, plural, namespace)
+        if informer:
+            informer.update_cache(obj)
+        return obj
 
     def get_custom_object(
         self,
@@ -239,6 +253,9 @@ class K8sClient:
             name=name,
             grace_period_seconds=grace_period_seconds,
         )
+        informer = self._lookup_informer(group, version, plural, namespace)
+        if informer:
+            informer.delete_from_cache(name)
 
     def patch_custom_object(
         self,
@@ -252,7 +269,7 @@ class K8sClient:
         """Patch a namespaced custom resource."""
         if self._write_limiter:
             self._write_limiter.acquire()
-        return self.get_custom_objects_api().patch_namespaced_custom_object(
+        obj = self.get_custom_objects_api().patch_namespaced_custom_object(
             group=group,
             version=version,
             namespace=namespace,
@@ -260,6 +277,10 @@ class K8sClient:
             name=name,
             body=body,
         )
+        informer = self._lookup_informer(group, version, plural, namespace)
+        if informer:
+            informer.update_cache(obj)
+        return obj
 
     # ------------------------------------------------------------------
     # PersistentVolumeClaim operations

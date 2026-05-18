@@ -105,6 +105,11 @@ class WorkloadInformer:
             self._cache[name] = obj
             self._advance_resource_version(metadata.get("resourceVersion"))
 
+    def delete_from_cache(self, name: str) -> None:
+        """Evict a single object from the cache by name."""
+        with self._lock:
+            self._cache.pop(name, None)
+
     def _advance_resource_version(self, rv: Optional[str]) -> None:
         """Advance ``_resource_version`` only when *rv* is strictly newer.
 

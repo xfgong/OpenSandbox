@@ -144,6 +144,50 @@ class TestK8sClient:
             group="g", version="v1", namespace="ns", plural="foos", body=body
         )
 
+    def test_create_custom_object_updates_informer_cache(self, k8s_runtime_config):
+        """create_custom_object upserts the new object into an existing informer cache."""
+        c = self._make_client(k8s_runtime_config)
+        created = {"metadata": {"name": "foo-1", "resourceVersion": "11"}}
+        c._custom_objects_api.create_namespaced_custom_object.return_value = created
+        fake_informer = MagicMock()
+        c._informers[("g", "v1", "foos", "ns")] = fake_informer
+        c.config = MagicMock(informer_enabled=True, read_qps=0.0, write_qps=0.0)
+        result = c.create_custom_object("g", "v1", "ns", "foos", {"metadata": {"name": "foo-1"}})
+        assert result == created
+        fake_informer.update_cache.assert_called_once_with(created)
+
+    def test_patch_custom_object_updates_informer_cache(self, k8s_runtime_config):
+        """patch_custom_object upserts the patched object into an existing informer cache."""
+        c = self._make_client(k8s_runtime_config)
+        patched = {"metadata": {"name": "foo-1", "resourceVersion": "12"}}
+        c._custom_objects_api.patch_namespaced_custom_object.return_value = patched
+        fake_informer = MagicMock()
+        c._informers[("g", "v1", "foos", "ns")] = fake_informer
+        c.config = MagicMock(informer_enabled=True, read_qps=0.0, write_qps=0.0)
+        result = c.patch_custom_object("g", "v1", "ns", "foos", "foo-1", {"spec": {"x": 1}})
+        assert result == patched
+        fake_informer.update_cache.assert_called_once_with(patched)
+
+    def test_delete_custom_object_evicts_informer_cache(self, k8s_runtime_config):
+        """delete_custom_object removes the object from an existing informer cache."""
+        c = self._make_client(k8s_runtime_config)
+        fake_informer = MagicMock()
+        c._informers[("g", "v1", "foos", "ns")] = fake_informer
+        c.config = MagicMock(informer_enabled=True, read_qps=0.0, write_qps=0.0)
+        c.delete_custom_object("g", "v1", "ns", "foos", "foo-1")
+        fake_informer.delete_from_cache.assert_called_once_with("foo-1")
+
+    def test_write_paths_skip_cache_when_no_informer(self, k8s_runtime_config):
+        """Write paths must not crash when no informer has been started yet."""
+        c = self._make_client(k8s_runtime_config)
+        c._custom_objects_api.create_namespaced_custom_object.return_value = {"metadata": {"name": "x"}}
+        c._custom_objects_api.patch_namespaced_custom_object.return_value = {"metadata": {"name": "x"}}
+        c.config = MagicMock(informer_enabled=True, read_qps=0.0, write_qps=0.0)
+        # No informers registered → _lookup_informer returns None
+        c.create_custom_object("g", "v1", "ns", "foos", {"metadata": {"name": "x"}})
+        c.patch_custom_object("g", "v1", "ns", "foos", "x", {})
+        c.delete_custom_object("g", "v1", "ns", "foos", "x")
+
     def test_get_custom_object_returns_none_on_404(self, k8s_runtime_config):
         """get_custom_object returns None when the API raises a 404."""
         c = self._make_client(k8s_runtime_config)
