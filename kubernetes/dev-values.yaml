@@ -1,0 +1,32 @@
+# Local dev/test-env values for the `opensandbox` umbrella chart.
+# Local-only — do NOT PR upstream. Keep in sync when rebasing `dev` onto origin/main.
+#
+# Usage:
+#   helm upgrade opensandbox kubernetes/charts/opensandbox \
+#     -n opensandbox-system -f kubernetes/dev-values.yaml
+#
+# (run `helm dependency build` in kubernetes/charts/opensandbox first if charts/ is empty)
+
+opensandbox-server:
+  server:
+    # Test-env shared API key (matches cubebox CUBEBOX_SANDBOX__API_KEY).
+    # origin/main injects api_key via env override OPENSANDBOX_SERVER_API_KEY, not configToml.
+    env:
+      - name: OPENSANDBOX_SERVER_API_KEY
+        value: my-secret-api-key-12345
+    # Custom build from fix/k8s-pvc-managed-cleanup (PVC managed cleanup), pushed to internal hub.
+    image:
+      repository: hub.sensedeal.vip/library/opensandbox-server
+      tag: v0.1.14-pvc-cleanup
+    # External access for cubebox etc. — pinned NodePort (was lost when helm reset Service to ClusterIP).
+    service:
+      type: NodePort
+      port: 80
+      nodePort: 32378
+
+opensandbox-controller:
+  controller:
+    # Custom build including the --containerd-socket-path flag (stock v0.2.0 image lacks it -> CrashLoop).
+    image:
+      repository: hub.sensedeal.vip/library/opensandbox-controller
+      tag: v0.2.1
