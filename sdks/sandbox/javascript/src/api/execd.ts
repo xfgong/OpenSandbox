@@ -415,6 +415,9 @@ export interface paths {
          * @description Performs text replacement in one or multiple files. Replaces all occurrences
          *     of the old string with the new string (similar to strings.ReplaceAll).
          *     Preserves file permissions. Useful for batch text substitution across files.
+         *
+         *     When `verbose=true` is set, the response includes per-file replacement counts.
+         *     Without this parameter, the response body is empty (backward-compatible behavior).
          */
         post: operations["replaceContent"];
         delete?: never;
@@ -458,8 +461,46 @@ export interface paths {
          * @description Downloads a file from the specified path within the sandbox. Supports HTTP
          *     range requests for resumable downloads and partial content retrieval.
          *     Returns file as octet-stream with appropriate headers.
+         *
+         *     When offset/limit query parameters are provided, the endpoint performs
+         *     line-based reading and returns text/plain content instead. Line-based
+         *     parameters are mutually exclusive with the Range header.
          */
         get: operations["downloadFile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/directories/list": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List directory contents
+         * @description Lists entries under a directory with optional depth control. By default,
+         *     only immediate children are returned (`depth=1`). Set `depth` to a larger
+         *     value to include descendants up to that many levels below `path`. The
+         *     root directory itself is not included in the response.
+         *
+         *     Symbolic links are reported with `type=symlink` and are not traversed:
+         *     the listing never descends into a link target, even when `depth` would
+         *     otherwise allow it. For the same reason, when `path` itself resolves to
+         *     a symbolic link the request is rejected with `400`; callers must pass
+         *     the real directory path they want listed.
+         *
+         *     Entries are returned in lexical order by entry name within each
+         *     directory. Descendants reported via `depth>1` follow their parent in
+         *     the same lexical order, so a depth-2 listing yields stable, predictable
+         *     output for file-browser style clients.
+         */
+        get: operations["listDirectory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -769,6 +810,12 @@ export interface components {
              */
             path: string;
             /**
+             * @description Entry type
+             * @example file
+             * @enum {string}
+             */
+            type?: "file" | "directory" | "symlink" | "other";
+            /**
              * Format: int64
              * @description File size in bytes
              * @example 2048
@@ -860,7 +907,7 @@ export interface components {
         /** @description Content replacement operation */
         ReplaceFileContentItem: {
             /**
-             * @description String to be replaced
+             * @description String to be replaced (must not be empty)
              * @example localhost
              */
             old: string;
@@ -869,6 +916,14 @@ export interface components {
              * @example 0.0.0.0
              */
             new: string;
+        };
+        /** @description Result of a content replacement operation on a single file */
+        ReplaceFileContentResult: {
+            /**
+             * @description Number of occurrences replaced. 0 means oldContent was not found in the file.
+             * @example 1
+             */
+            replacedCount: number;
         };
         /** @description System resource usage metrics */
         Metrics: {
@@ -1548,7 +1603,10 @@ export interface operations {
     };
     replaceContent: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description When true, return per-file replacement counts in the response body. */
+                verbose?: boolean;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1573,12 +1631,29 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Content replaced successfully */
+            /**
+             * @description Content replaced successfully. When `verbose=true`, returns per-file
+             *     replacement counts. Otherwise, the response body is empty.
+             */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    /**
+                     * @example {
+                     *       "/workspace/config.yaml": {
+                     *         "replacedCount": 1
+                     *       },
+                     *       "/workspace/app.py": {
+                     *         "replacedCount": 0
+                     *       }
+                     *     }
+                     */
+                    "application/json": {
+                        [key: string]: components["schemas"]["ReplaceFileContentResult"];
+                    };
+                };
             };
             400: components["responses"]["BadRequest"];
             500: components["responses"]["InternalServerError"];
@@ -1627,10 +1702,20 @@ export interface operations {
                  * @example /workspace/data.csv
                  */
                 path: string;
+                /**
+                 * @description Starting line number (1-based) for line-based reading. Mutually exclusive with the Range header.
+                 * @example 100
+                 */
+                offset?: number;
+                /**
+                 * @description Number of lines to return for line-based reading. Mutually exclusive with the Range header.
+                 * @example 20
+                 */
+                limit?: number;
             };
             header?: {
                 /**
-                 * @description HTTP Range header for partial content requests
+                 * @description HTTP Range header for partial content requests. Mutually exclusive with offset/limit.
                  * @example bytes=0-1023
                  */
                 Range?: string;
@@ -1640,17 +1725,21 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description File content */
+            /**
+             * @description File content. Returns application/octet-stream for full or byte-range
+             *     downloads, or text/plain for line-based reads (when offset/limit are provided).
+             */
             200: {
                 headers: {
-                    /** @description Attachment header with filename */
+                    /** @description Attachment header with filename (byte-range mode only) */
                     "Content-Disposition"?: string;
-                    /** @description File size in bytes */
+                    /** @description File size in bytes (byte-range mode only) */
                     "Content-Length"?: number;
                     [name: string]: unknown;
                 };
                 content: {
                     "application/octet-stream": string;
+                    "text/plain": string;
                 };
             };
             /** @description Partial file content (when Range header is provided) */
@@ -1677,6 +1766,64 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            500: components["responses"]["InternalServerError"];
+        };
+    };
+    listDirectory: {
+        parameters: {
+            query: {
+                /**
+                 * @description Directory path to list
+                 * @example /workspace/project
+                 */
+                path: string;
+                /**
+                 * @description Maximum child depth to include. `1` lists immediate children only.
+                 * @example 2
+                 */
+                depth?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Array of directory entries with metadata */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    /**
+                     * @example [
+                     *       {
+                     *         "path": "/workspace/project/src",
+                     *         "type": "directory",
+                     *         "size": 0,
+                     *         "modified_at": "2025-11-16T14:30:45Z",
+                     *         "created_at": "2025-11-16T14:30:45Z",
+                     *         "owner": "admin",
+                     *         "group": "admin",
+                     *         "mode": 755
+                     *       },
+                     *       {
+                     *         "path": "/workspace/project/README.md",
+                     *         "type": "file",
+                     *         "size": 2048,
+                     *         "modified_at": "2025-11-16T14:30:45Z",
+                     *         "created_at": "2025-11-16T14:30:45Z",
+                     *         "owner": "admin",
+                     *         "group": "admin",
+                     *         "mode": 644
+                     *       }
+                     *     ]
+                     */
+                    "application/json": components["schemas"]["FileInfo"][];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            404: components["responses"]["NotFound"];
             500: components["responses"]["InternalServerError"];
         };
     };

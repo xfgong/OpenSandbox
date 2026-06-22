@@ -745,9 +745,20 @@ paths:
         Performs text replacement in one or multiple files. Replaces all occurrences
         of the old string with the new string (similar to strings.ReplaceAll).
         Preserves file permissions. Useful for batch text substitution across files.
+
+        When `verbose=true` is set, the response includes per-file replacement counts.
+        Without this parameter, the response body is empty (backward-compatible behavior).
       operationId: replaceContent
       tags:
         - Filesystem
+      parameters:
+        - name: verbose
+          in: query
+          required: false
+          schema:
+            type: boolean
+            default: false
+          description: When true, return per-file replacement counts in the response body.
       requestBody:
         required: true
         content:
@@ -765,7 +776,20 @@ paths:
                 new: "DEBUG = False"
       responses:
         "200":
-          description: Content replaced successfully
+          description: |
+            Content replaced successfully. When `verbose=true`, returns per-file
+            replacement counts. Otherwise, the response body is empty.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties:
+                  $ref: "#/components/schemas/ReplaceFileContentResult"
+              example:
+                "/workspace/config.yaml":
+                  replacedCount: 1
+                "/workspace/app.py":
+                  replacedCount: 0
         "400":
           $ref: "#/components/responses/BadRequest"
         "500":
@@ -817,6 +841,10 @@ paths:
         Downloads a file from the specified path within the sandbox. Supports HTTP
         range requests for resumable downloads and partial content retrieval.
         Returns file as octet-stream with appropriate headers.
+
+        When offset/limit query parameters are provided, the endpoint performs
+        line-based reading and returns text/plain content instead. Line-based
+        parameters are mutually exclusive with the Range header.
       operationId: downloadFile
       tags:
         - Filesystem
@@ -828,30 +856,56 @@ paths:
           schema:
             type: string
           example: /workspace/data.csv
+        - name: offset
+          in: query
+          required: false
+          description: >
+            Starting line number (1-based) for line-based reading.
+            Mutually exclusive with the Range header.
+          schema:
+            type: integer
+            minimum: 1
+          example: 100
+        - name: limit
+          in: query
+          required: false
+          description: >
+            Number of lines to return for line-based reading.
+            Mutually exclusive with the Range header.
+          schema:
+            type: integer
+            minimum: 1
+          example: 20
         - name: Range
           in: header
           required: false
-          description: HTTP Range header for partial content requests
+          description: HTTP Range header for partial content requests. Mutually exclusive with offset/limit.
           schema:
             type: string
           example: "bytes=0-1023"
       responses:
         "200":
-          description: File content
+          description: |
+            File content. Returns application/octet-stream for full or byte-range
+            downloads, or text/plain for line-based reads (when offset/limit are provided).
           content:
             application/octet-stream:
               schema:
                 type: string
                 format: binary
+            text/plain:
+              schema:
+                type: string
+                description: Line-based content returned when offset/limit parameters are used
           headers:
             Content-Disposition:
               schema:
                 type: string
-              description: Attachment header with filename
+              description: Attachment header with filename (byte-range mode only)
             Content-Length:
               schema:
                 type: integer
-              description: File size in bytes
+              description: File size in bytes (byte-range mode only)
         "206":
           description: Partial file content (when Range header is provided)
           content:
@@ -878,6 +932,79 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+
+  /directories/list:
+    get:
+      summary: List directory contents
+      description: |
+        Lists entries under a directory with optional depth control. By default,
+        only immediate children are returned (`depth=1`). Set `depth` to a larger
+        value to include descendants up to that many levels below `path`. The
+        root directory itself is not included in the response.
+
+        Symbolic links are reported with `type=symlink` and are not traversed:
+        the listing never descends into a link target, even when `depth` would
+        otherwise allow it. For the same reason, when `path` itself resolves to
+        a symbolic link the request is rejected with `400`; callers must pass
+        the real directory path they want listed.
+
+        Entries are returned in lexical order by entry name within each
+        directory. Descendants reported via `depth>1` follow their parent in
+        the same lexical order, so a depth-2 listing yields stable, predictable
+        output for file-browser style clients.
+      operationId: listDirectory
+      tags:
+        - Filesystem
+      parameters:
+        - name: path
+          in: query
+          required: true
+          description: Directory path to list
+          schema:
+            type: string
+          example: /workspace/project
+        - name: depth
+          in: query
+          required: false
+          description: Maximum child depth to include. `1` lists immediate children only.
+          schema:
+            type: integer
+            format: int32
+            minimum: 0
+            default: 1
+          example: 2
+      responses:
+        "200":
+          description: Array of directory entries with metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/FileInfo"
+              example:
+                - path: /workspace/project/src
+                  type: directory
+                  size: 0
+                  modified_at: 2025-11-16T14:30:45Z
+                  created_at: 2025-11-16T14:30:45Z
+                  owner: admin
+                  group: admin
+                  mode: 755
+                - path: /workspace/project/README.md
+                  type: file
+                  size: 2048
+                  modified_at: 2025-11-16T14:30:45Z
+                  created_at: 2025-11-16T14:30:45Z
+                  owner: admin
+                  group: admin
+                  mode: 644
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
         "500":
           $ref: "#/components/responses/InternalServerError"
 
@@ -1232,6 +1359,11 @@ components:
           type: string
           description: Absolute file path
           example: /workspace/file.txt
+        type:
+          type: string
+          description: Entry type
+          enum: [file, directory, symlink, other]
+          example: file
         size:
           type: integer
           format: int64
@@ -1321,13 +1453,24 @@ components:
       properties:
         old:
           type: string
-          description: String to be replaced
+          description: String to be replaced (must not be empty)
+          minLength: 1
           example: "localhost"
         new:
           type: string
           description: Replacement string
           example: "0.0.0.0"
       required: [old, new]
+
+    ReplaceFileContentResult:
+      type: object
+      description: Result of a content replacement operation on a single file
+      properties:
+        replacedCount:
+          type: integer
+          description: Number of occurrences replaced. 0 means oldContent was not found in the file.
+          example: 1
+      required: [replacedCount]
 
     Metrics:
       type: object
